@@ -46,4 +46,4 @@ The link looks like `https://ai-agent-relay.vercel.app/h/<id>`. Anyone with that
 
 ## Icons
 
-Preset marks are real logos: Simple Icons (CC0) for the monochrome marks, and the public app icons for Base44, Link by Stripe, Gemini, RunPod, and Boundless. A tool you add by URL uses that site’s favicon. If the favicon fails to load, the card shows a colored initial.
+Preset marks are real logos: Simple Icons (CC0) for the monochrome marks, and the public app icons for Base44, Link by Stripe, Gemini, RunPod, and Boundless. A tool you add by URL loads an icon from icon.horse. If that request fails, the card shows a colored initial.

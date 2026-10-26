@@ -575,7 +575,11 @@ function onClick(event) {
   }
   if (action === 'share-link') shareLink();
   if (action === 'copy-agent-prompt') copyAgentPrompt();
-  if (action === 'copy-public') copyNow(document.getElementById('public-text')?.textContent || '');
+  if (action === 'copy-public') {
+    const text = document.getElementById('public-text')?.textContent || '';
+    if (!text.trim()) return toast('There is no handoff text to copy on this page.');
+    copyNow(text);
+  }
   if (action === 'refresh-credits') refreshCredits();
   if (action === 'backup') downloadText(JSON.stringify(state, null, 2), 'ai-agent-relay-backup.json');
   if (action === 'signup') auth('signup');

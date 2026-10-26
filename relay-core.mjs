@@ -241,7 +241,7 @@ export function iconForTool(tool) {
         src: '',
         tile: '#15182a',
         full: false,
-        remote: `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=128`,
+        remote: `https://icon.horse/icon/${encodeURIComponent(host)}`,
         letter,
         label: tool.name || host
       };
