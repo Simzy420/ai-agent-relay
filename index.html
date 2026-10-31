@@ -62,6 +62,53 @@ body.no-dock { padding-bottom: 28px; }
 .brand { color: var(--cyan); font-weight: 750; letter-spacing: .04em; text-decoration: none; text-shadow: 0 0 18px rgba(61, 240, 255, .45); }
 .top nav { display: flex; gap: 10px; flex-wrap: wrap; }
 .top a { color: var(--muted); text-decoration: none; }
+.top a.is-active { color: var(--cyan); }
+body.guide-mode .hero,
+body.guide-mode footer { display: none; }
+.guide-card { max-width: 40rem; margin: 18px auto; }
+.guide-progress { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.guide-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #243049;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+}
+.guide-dot.is-current { background: var(--cyan); box-shadow: 0 0 12px rgba(61, 240, 255, .55); }
+.guide-dot.is-done { background: var(--lime); }
+.guide-tasks { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.guide-task {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid rgba(255, 255, 255, .06);
+}
+.guide-task.is-done { border-color: rgba(198, 255, 77, .35); }
+.guide-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 1px solid rgba(61, 240, 255, .45);
+  color: var(--lime);
+  font-size: .85rem;
+}
+.guide-task.is-done .guide-check {
+  background: rgba(198, 255, 77, .12);
+  border-color: rgba(198, 255, 77, .55);
+}
+.guide-body { display: grid; gap: 8px; margin-bottom: 12px; }
+.guide-actions { margin-top: 4px; }
+button.primary:disabled,
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
 .hero {
   position: relative;
   margin: 16px auto;
@@ -256,6 +303,7 @@ footer a { color: var(--cyan); }
 <header class="top">
   <a class="brand" href="/">AI Agent Relay</a>
   <nav>
+    <a href="#guide">Guide</a>
     <a href="#packet">Context</a>
     <a href="#chain">Chain</a>
     <a href="#tools">Tools</a>
@@ -263,7 +311,7 @@ footer a { color: var(--cyan); }
     <a href="#account">Account</a>
   </nav>
 </header>
-<section class="hero wrap">
+<section class="hero wrap" id="hero">
   <canvas id="hero-canvas" aria-hidden="true"></canvas>
   <div class="hero-copy">
     <p class="kicker">Quota runs out. The work does not.</p>

@@ -56,9 +56,192 @@ export function emptyFlow() {
   return { rules: [], steps: [] };
 }
 
+export function emptyGuide() {
+  return { stepId: 'project', skipped: {}, confirmed: {}, completed: false };
+}
+
 export function emptyState() {
   const project = emptyProject('My first project');
-  return { version: 3, projects: [project], active: project.id, history: [], onboardingDismissed: false };
+  return {
+    version: 3,
+    projects: [project],
+    active: project.id,
+    history: [],
+    onboardingDismissed: false,
+    guide: emptyGuide()
+  };
+}
+
+export const GUIDE_STEPS = [
+  {
+    id: 'project',
+    title: 'Name your project',
+    section: 'projects',
+    blurb: 'Start with a name you will recognize later. That is the only job on this step.',
+    tasks: [
+      { id: 'name', label: 'Type a clear project name', required: true }
+    ]
+  },
+  {
+    id: 'tools',
+    title: 'Add the tools in your chain',
+    section: 'tools',
+    blurb: 'Every hop needs a tool. Add the ones you switch between when a quota runs out.',
+    tasks: [
+      { id: 'one', label: 'Add at least one AI tool', required: true },
+      { id: 'two', label: 'Add a second tool for the next hop', required: false }
+    ]
+  },
+  {
+    id: 'packet',
+    title: 'Fill the context packet',
+    section: 'packet',
+    blurb: 'These three boxes travel with every handoff. Fill them here before you leave this step.',
+    tasks: [
+      { id: 'goal', label: 'Write the goal', required: true },
+      { id: 'state', label: 'Describe the current state', required: true },
+      { id: 'decisions', label: 'List decisions so far (or write “none yet”)', required: true }
+    ]
+  },
+  {
+    id: 'flow',
+    title: 'Set must-do rules and checklist gates',
+    section: 'flow',
+    blurb: 'Optional, but useful. Rules and required steps are injected into every handoff. Skip if you want a bare handoff.',
+    optional: true,
+    tasks: [
+      { id: 'gate', label: 'Add at least one must-do rule or required checklist step', required: false }
+    ]
+  },
+  {
+    id: 'handoff',
+    title: 'Send the handoff',
+    section: 'handoff',
+    blurb: 'Copy the packet into the next tool. This page cannot open or read that chat for you.',
+    tasks: [
+      { id: 'sent', label: 'Continue in the next tool, or copy / share a handoff', required: true }
+    ]
+  },
+  {
+    id: 'paste',
+    title: 'Paste the reply back',
+    section: 'chain',
+    blurb: 'When the other tool answers, bring the summary here so the packet stays current.',
+    tasks: [
+      { id: 'reply', label: 'Paste a reply into the chain', required: true }
+    ]
+  },
+  {
+    id: 'close',
+    title: 'Close the hop',
+    section: 'chain',
+    blurb: 'Tick every required checklist item yourself, then mark the hop done.',
+    tasks: [
+      { id: 'done', label: 'Mark at least one outgoing hop as done', required: true }
+    ]
+  }
+];
+
+export function guideTaskDone(stepId, taskId, project, state) {
+  if (!project) return false;
+  if (stepId === 'project' && taskId === 'name') {
+    return Boolean(project.name.trim()) && state?.guide?.confirmed?.project === true;
+  }
+  if (stepId === 'tools' && taskId === 'one') return project.tools.length > 0;
+  if (stepId === 'tools' && taskId === 'two') return project.tools.length >= 2;
+  if (stepId === 'packet' && taskId === 'goal') return Boolean(project.packet.goal.trim());
+  if (stepId === 'packet' && taskId === 'state') return Boolean(project.packet.state.trim());
+  if (stepId === 'packet' && taskId === 'decisions') return Boolean(project.packet.decisions.trim());
+  if (stepId === 'flow' && taskId === 'gate') {
+    return filledRules(project).length > 0 || filledSteps(project).length > 0;
+  }
+  if (stepId === 'handoff' && taskId === 'sent') {
+    const handed = project.packet.hops.some(hop => hop.direction === 'out')
+      || (state?.history || []).some(row => row.projectId === project.id && (row.status === 'copied' || row.status === 'shared'));
+    return handed;
+  }
+  if (stepId === 'paste' && taskId === 'reply') {
+    return project.packet.hops.some(hop => Boolean(hop.reply && String(hop.reply).trim()));
+  }
+  if (stepId === 'close' && taskId === 'done') {
+    return project.packet.hops.some(hop => hop.direction === 'out' && hop.done);
+  }
+  return false;
+}
+
+export function guideStepProgress(step, project, state) {
+  const skipped = Boolean(state?.guide?.skipped?.[step.id]);
+  const tasks = step.tasks.map(task => ({
+    id: task.id,
+    label: task.label,
+    required: task.required !== false,
+    done: guideTaskDone(step.id, task.id, project, state)
+  }));
+  const required = tasks.filter(task => task.required);
+  const optionalDone = tasks.some(task => !task.required && task.done);
+  const requiredDone = required.length ? required.every(task => task.done) : false;
+  // Optional steps with no required tasks stay open until skipped or an optional task is done.
+  const ready = skipped || (required.length ? requiredDone : optionalDone || false);
+  return { tasks, skipped, complete: ready, ready };
+}
+
+export function currentGuideStep(state, project) {
+  const guide = state?.guide && typeof state.guide === 'object' ? state.guide : emptyGuide();
+  const index = Math.max(0, GUIDE_STEPS.findIndex(step => step.id === guide.stepId));
+  const step = GUIDE_STEPS[index] || GUIDE_STEPS[0];
+  const progress = guideStepProgress(step, project, { ...state, guide });
+  const finished = Boolean(guide.completed) || (index === GUIDE_STEPS.length - 1 && progress.ready);
+  return { step, index, progress, finished };
+}
+
+export function advanceGuideState(state, project) {
+  const guide = {
+    stepId: state.guide?.stepId || 'project',
+    skipped: { ...(state.guide?.skipped || {}) },
+    confirmed: { ...(state.guide?.confirmed || {}) },
+    completed: state.guide?.completed === true
+  };
+  const nextState = { ...state, guide };
+  const index = Math.max(0, GUIDE_STEPS.findIndex(step => step.id === guide.stepId));
+  const step = GUIDE_STEPS[index] || GUIDE_STEPS[0];
+  const progress = guideStepProgress(step, project, nextState);
+  if (!progress.ready) {
+    return { state: nextState, advanced: false, finished: false, step };
+  }
+  const following = GUIDE_STEPS[index + 1];
+  if (!following) {
+    guide.completed = true;
+    return { state: nextState, advanced: false, finished: true, step };
+  }
+  guide.stepId = following.id;
+  guide.completed = false;
+  return { state: nextState, advanced: true, finished: false, step: following };
+}
+
+export function skipGuideStep(state, stepId) {
+  const guide = {
+    stepId: state.guide?.stepId || 'project',
+    skipped: { ...(state.guide?.skipped || {}), [stepId]: true },
+    confirmed: { ...(state.guide?.confirmed || {}) },
+    completed: false
+  };
+  const project = state.projects.find(item => item.id === state.active) || state.projects[0];
+  return advanceGuideState({ ...state, guide }, project).state;
+}
+
+export function confirmGuideStep(state, stepId) {
+  const guide = {
+    stepId: state.guide?.stepId || 'project',
+    skipped: { ...(state.guide?.skipped || {}) },
+    confirmed: { ...(state.guide?.confirmed || {}), [stepId]: true },
+    completed: state.guide?.completed === true
+  };
+  const project = state.projects.find(item => item.id === state.active) || state.projects[0];
+  return advanceGuideState({ ...state, guide }, project).state;
+}
+
+export function resetGuide(state) {
+  return { ...state, guide: emptyGuide() };
 }
 
 export function emptyProject(name) {
@@ -273,6 +456,21 @@ function handoffHasContent(handoff) {
   return HANDOFF_KEYS.some(key => typeof handoff[key] === 'string' && handoff[key].trim());
 }
 
+function migrateGuide(input) {
+  const base = emptyGuide();
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return base;
+  const stepId = GUIDE_STEPS.some(step => step.id === input.stepId) ? input.stepId : base.stepId;
+  const skipped = {};
+  const confirmed = {};
+  if (input.skipped && typeof input.skipped === 'object') {
+    for (const step of GUIDE_STEPS) if (input.skipped[step.id] === true) skipped[step.id] = true;
+  }
+  if (input.confirmed && typeof input.confirmed === 'object') {
+    for (const step of GUIDE_STEPS) if (input.confirmed[step.id] === true) confirmed[step.id] = true;
+  }
+  return { stepId, skipped, confirmed, completed: input.completed === true };
+}
+
 export function migrate(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid backup: no projects');
   if (!Array.isArray(input.projects) || !input.projects.length) throw new Error('Invalid backup: no projects');
@@ -283,7 +481,8 @@ export function migrate(input) {
     projects,
     active,
     history: Array.isArray(input.history) ? input.history.filter(isHistoryRow).map(row => ({ ...row })) : [],
-    onboardingDismissed: input.onboardingDismissed === true
+    onboardingDismissed: input.onboardingDismissed === true,
+    guide: migrateGuide(input.guide)
   };
   for (const project of state.projects) {
     if (!project.legacyHandoffLogged && handoffHasContent(project.handoff)) {

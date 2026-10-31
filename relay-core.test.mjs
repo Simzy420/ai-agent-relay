@@ -4,7 +4,8 @@ import {
   PRESETS, migrate, loadState, makeTool, nameFromUrl, iconForTool, findDuplicate,
   nextInChain, nextByAllowance, toolHasQuota, rollQuota, buildPrompt, mergePaste,
   canCompleteHop, searchSessions, recordSession, emptyState, explainSupabaseError,
-  handoffIdFromLocation, providerKind, adapterFor, quotaLabel
+  handoffIdFromLocation, providerKind, adapterFor, quotaLabel,
+  GUIDE_STEPS, currentGuideStep, advanceGuideState, confirmGuideStep, skipGuideStep, resetGuide
 } from './relay-core.mjs';
 
 test('keeps an older saved relay and does not invent history twice', () => {
@@ -162,4 +163,38 @@ test('duplicates and provider kinds stay honest', () => {
   assert.match(explainSupabaseError({ code: 'PGRST205', message: 'Could not find the table public.relay_handoffs' }), /SQL/);
   assert.equal(handoffIdFromLocation({ pathname: '/h/11111111-1111-1111-1111-111111111111', search: '' }), '11111111-1111-1111-1111-111111111111');
   assert.equal(handoffIdFromLocation({ pathname: '/', search: '?h=11111111-1111-1111-1111-111111111111' }), '11111111-1111-1111-1111-111111111111');
+});
+
+test('walkthrough stays on one step until that step is ready', () => {
+  let state = emptyState();
+  const project = state.projects[0];
+  assert.equal(state.guide.stepId, 'project');
+  assert.equal(currentGuideStep(state, project).progress.ready, false);
+  assert.equal(GUIDE_STEPS[0].id, 'project');
+
+  state = confirmGuideStep(state, 'project');
+  assert.equal(state.guide.stepId, 'tools');
+  assert.equal(currentGuideStep(state, project).step.id, 'tools');
+
+  project.tools.push(makeTool({ name: 'Cursor', url: 'https://cursor.com' }));
+  let advanced = advanceGuideState(state, project);
+  state = advanced.state;
+  assert.equal(advanced.advanced, true);
+  assert.equal(state.guide.stepId, 'packet');
+
+  project.packet.goal = 'Ship the guide';
+  project.packet.state = 'Guide tab in progress';
+  project.packet.decisions = 'none yet';
+  advanced = advanceGuideState(state, project);
+  state = advanced.state;
+  assert.equal(state.guide.stepId, 'flow');
+
+  state = skipGuideStep(state, 'flow');
+  assert.equal(state.guide.stepId, 'handoff');
+  assert.equal(state.guide.skipped.flow, true);
+
+  state = resetGuide(state);
+  assert.equal(state.guide.stepId, 'project');
+  assert.equal(state.guide.completed, false);
+  assert.deepEqual(migrate({ ...state, guide: undefined }).guide.stepId, 'project');
 });

@@ -3,7 +3,8 @@ import {
   nameFromUrl, coerceUrl, findDuplicate, presetForUrl, providerKind, adapterFor, iconForTool,
   nextInChain, nextByAllowance, rollQuota, quotaLabel, buildPrompt, agentLinkPrompt, mergePaste,
   canCompleteHop, filledSteps, recordSession, searchSessions, lastTouch, explainSupabaseError,
-  handoffIdFromLocation, escapeHtml, formatMoney, uid, reorder
+  handoffIdFromLocation, escapeHtml, formatMoney, uid, reorder,
+  GUIDE_STEPS, currentGuideStep, advanceGuideState, skipGuideStep, confirmGuideStep, resetGuide
 } from './relay-core.mjs';
 
 const SUPABASE_URL = 'https://inlqueorerrsmfnaryzj.supabase.co';
@@ -16,7 +17,7 @@ let corruptRaw = '';
 let dbPromise = null;
 let nameDirty = false;
 let toastTimer = 0;
-const ui = { preview: '', q: '', projectId: '', agent: '', status: '', credits: null, creditsLoading: false, blockMessage: '' };
+const ui = { preview: '', q: '', projectId: '', agent: '', status: '', credits: null, creditsLoading: false, blockMessage: '', view: location.hash === '#guide' ? 'guide' : 'full' };
 
 function current() {
   let project = state.projects.find(item => item.id === state.active);
@@ -113,9 +114,11 @@ function syncDock() {
   const button = document.getElementById('continue-button');
   const note = document.getElementById('continue-note');
   const publicId = handoffIdFromLocation(location);
-  const hide = saveBlocked || !state || Boolean(publicId);
+  const hide = saveBlocked || !state || Boolean(publicId) || ui.view === 'guide';
   dock.hidden = hide;
   document.body.classList.toggle('no-dock', hide);
+  document.body.classList.toggle('guide-mode', ui.view === 'guide' && !publicId && !saveBlocked);
+  syncNav();
   if (hide || !button) return;
   const project = current();
   for (const tool of project.tools) rollQuota(tool);
@@ -126,6 +129,160 @@ function syncDock() {
   const honest = 'This page cannot read the other tool’s chat or switch it for you. One tap copies the handoff and opens the next tool.';
   const extra = adapter && adapter.canCallInApp === false ? ` ${adapter.unavailableReason}` : '';
   note.textContent = next ? `Next: ${next.name}. ${quotaLabel(next)} ${honest}${extra}` : `No tool has quota left today. ${honest}`;
+}
+
+function syncNav() {
+  for (const link of document.querySelectorAll('.top nav a')) {
+    const href = link.getAttribute('href') || '';
+    const active = ui.view === 'guide' ? href === '#guide' : href !== '#guide' && location.hash === href;
+    link.classList.toggle('is-active', active);
+  }
+}
+
+function enterGuide() {
+  ui.view = 'guide';
+  if (location.hash !== '#guide') history.replaceState(null, '', '#guide');
+  render();
+}
+
+function exitGuide(target) {
+  ui.view = 'full';
+  if (location.hash === '#guide') history.replaceState(null, '', target ? `#${target}` : ' ');
+  render();
+  if (target) {
+    requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+  }
+}
+
+function refreshGuideIfNeeded() {
+  if (ui.view !== 'guide') return;
+  const active = document.activeElement;
+  const focusId = active?.id || '';
+  const start = active?.selectionStart;
+  const end = active?.selectionEnd;
+  document.getElementById('app').innerHTML = guideHtml(current());
+  syncDock();
+  if (!focusId) return;
+  const node = document.getElementById(focusId);
+  if (!node) return;
+  node.focus();
+  if (typeof start === 'number' && typeof node.setSelectionRange === 'function') {
+    try { node.setSelectionRange(start, end); } catch {}
+  }
+}
+
+function afterGuideMutation() {
+  if (!state || ui.view !== 'guide') return;
+  const { progress } = currentGuideStep(state, current());
+  if (!progress.ready) {
+    refreshGuideIfNeeded();
+    return;
+  }
+  const result = advanceGuideState(state, current());
+  state = result.state;
+  persist();
+  if (result.advanced) toast(`Step done. Next: ${result.step.title}`);
+  else if (result.finished) toast('Walkthrough complete.');
+  render();
+}
+
+function guideBodyHtml(project, step) {
+  if (step.id === 'project') {
+    return `<label>Project name<input id="project-name" value="${escapeHtml(project.name)}" maxlength="120"></label>
+      <p class="fine">When the name looks right, confirm it to move on.</p>
+      <div class="row"><button type="button" class="primary" data-action="guide-confirm" data-step="project">Use this name and continue</button></div>`;
+  }
+  if (step.id === 'tools') {
+    const chips = PRESETS.slice(0, 8).map(preset => `<button type="button" class="chip" data-action="add-preset" data-key="${preset.key}">${logoHtml({ name: preset.name, url: preset.url, preset: preset.key }, false)}<span>${escapeHtml(preset.name)}</span></button>`).join('');
+    const list = project.tools.length
+      ? `<ul class="timeline">${project.tools.map((tool, index) => `<li class="chain-row">${logoHtml(tool, tool.active)}<span>${index + 1}. ${escapeHtml(tool.name)}</span></li>`).join('')}</ul>`
+      : '<p class="muted">No tools yet. Tap a preset or add your own.</p>';
+    return `<div class="row"><button type="button" class="primary" id="add-tool" data-action="open-add">+ Add AI tool</button></div>
+      <div class="chips">${chips}</div>
+      ${list}
+      <p class="fine">One tool unlocks the next step. A second tool is better for real hops.</p>`;
+  }
+  if (step.id === 'packet') {
+    return `<label>Goal<textarea id="packet-goal">${escapeHtml(project.packet.goal)}</textarea></label>
+      <label>Current state<textarea id="packet-state">${escapeHtml(project.packet.state)}</textarea></label>
+      <label>Decisions<textarea id="packet-decisions">${escapeHtml(project.packet.decisions)}</textarea></label>
+      <p class="fine">All three boxes on this card must have something in them before you continue.</p>`;
+  }
+  if (step.id === 'flow') {
+    const rules = project.flow.rules.map(rule => `<div class="row"><input data-rule="${escapeHtml(rule.id)}" value="${escapeHtml(rule.text)}" placeholder="Must do…" maxlength="240"><button type="button" data-action="remove-rule" data-id="${escapeHtml(rule.id)}">Remove</button></div>`).join('');
+    const steps = project.flow.steps.map(item => `<div class="row"><input data-step="${escapeHtml(item.id)}" value="${escapeHtml(item.text)}" placeholder="Required step…" maxlength="240"><button type="button" data-action="remove-step" data-id="${escapeHtml(item.id)}">Remove</button></div>`).join('');
+    return `<h3>Must do</h3>${rules}<button type="button" data-action="add-rule">Add a must-do</button>
+      <h3>Checklist</h3>${steps}<button type="button" data-action="add-step">Add a required step</button>
+      <p class="fine">Skip this step if you want a bare handoff with no gates.</p>`;
+  }
+  if (step.id === 'handoff') {
+    const active = project.tools.find(tool => tool.active) || project.tools[0];
+    const next = nextInChain(project.tools, active?.id || '', liveFor);
+    return `<p class="muted">Next tool: <strong>${escapeHtml(next?.name || 'none with quota left')}</strong></p>
+      <div class="row">
+        <button type="button" class="primary" data-action="continue">${next ? `Continue in ${escapeHtml(next.name)}` : 'Continue in next tool'}</button>
+        <button type="button" data-action="copy-handoff">Copy full handoff</button>
+        <button type="button" data-action="share-link">Create a read-only share link</button>
+      </div>
+      <p class="fine">Any one of those counts. The dock is hidden in Guide so the action lives on this card.</p>`;
+  }
+  if (step.id === 'paste') {
+    const pasteOptions = project.tools.map(tool => `<option value="${escapeHtml(tool.id)}">${escapeHtml(tool.name)}</option>`).join('');
+    return `<label>Which tool replied<select id="paste-tool">${pasteOptions}</select></label>
+      <label>Reply<textarea id="paste-back" placeholder="Paste the final reply or summary"></textarea></label>
+      <div class="row"><button type="button" class="primary" data-action="paste-back">Merge into the packet</button></div>`;
+  }
+  if (step.id === 'close') {
+    const openHop = [...project.packet.hops].reverse().find(hop => hop.direction === 'out' && !hop.done);
+    if (!openHop) {
+      return project.packet.hops.some(hop => hop.done)
+        ? '<p class="muted">An outgoing hop is already marked done.</p>'
+        : '<p class="muted">Send a handoff first, then come back to close it.</p>';
+    }
+    const steps = filledSteps(project);
+    const checks = steps.map(item => `<label class="check"><input type="checkbox" data-action="toggle-check" data-hop="${escapeHtml(openHop.id)}" data-step="${escapeHtml(item.id)}"${openHop.checks?.[item.id] ? ' checked' : ''}> ${escapeHtml(item.text)}</label>`).join('');
+    const gate = canCompleteHop(project, openHop);
+    return `<p><strong>${escapeHtml(openHop.toolName || 'Tool')}</strong></p>
+      ${checks || '<p class="fine">No required checklist steps. You can mark this hop done now.</p>'}
+      <button type="button" class="primary" data-action="mark-done" data-hop="${escapeHtml(openHop.id)}">Mark hop done</button>
+      <p class="fine" data-gate>${gate.ok ? 'Checklist clear.' : 'Still needed: ' + escapeHtml(gate.missing.map(item => item.text).join(', '))}</p>`;
+  }
+  return '';
+}
+
+function guideHtml(project) {
+  const { step, index, progress, finished } = currentGuideStep(state, project);
+  if (finished && progress.ready) {
+    return `<section class="card guide-card" id="guide">
+      <p class="kicker">Walkthrough complete</p>
+      <h2>You’re through the relay loop</h2>
+      <p class="muted">Name → tools → packet → handoff → paste back → close the hop. Open the full app any time, or run the guide again.</p>
+      <div class="row">
+        <button type="button" class="primary" data-action="exit-guide">Open the full relay</button>
+        <button type="button" data-action="reset-guide">Restart guide</button>
+      </div>
+    </section>`;
+  }
+  const dots = GUIDE_STEPS.map((item, i) => {
+    const done = i < index || (i === index && progress.ready);
+    return `<span class="guide-dot${i === index ? ' is-current' : ''}${done ? ' is-done' : ''}" title="${escapeHtml(item.title)}"></span>`;
+  }).join('');
+  const tasks = progress.tasks.map(task => `<li class="guide-task${task.done ? ' is-done' : ''}"><span class="guide-check" aria-hidden="true">${task.done ? '✓' : ''}</span><span><strong>${escapeHtml(task.label)}</strong>${task.required ? '' : ' <span class="fine">optional</span>'}</span></li>`).join('');
+  const skip = step.optional
+    ? `<button type="button" data-action="skip-guide-step" data-step="${escapeHtml(step.id)}">Skip this step</button>`
+    : '';
+  const next = progress.ready
+    ? `<button type="button" class="primary" data-action="guide-next">Continue to next step</button>`
+    : `<button type="button" class="primary" data-action="guide-next" disabled>Complete the items above to continue</button>`;
+  return `<section class="card guide-card" id="guide">
+    <div class="guide-progress" aria-label="Guide progress">${dots}</div>
+    <p class="fine">Step ${index + 1} of ${GUIDE_STEPS.length}</p>
+    <h2>${escapeHtml(step.title)}</h2>
+    <p class="muted">${escapeHtml(step.blurb)}</p>
+    <ul class="guide-tasks">${tasks}</ul>
+    <div class="guide-body">${guideBodyHtml(project, step)}</div>
+    <div class="row guide-actions">${next}${skip}<button type="button" data-action="exit-guide">Exit guide</button></div>
+  </section>`;
 }
 
 function onboardHtml(project) {
@@ -247,14 +404,18 @@ function render() {
   let rolled = false;
   for (const tool of current().tools) if (rollQuota(tool)) rolled = true;
   if (rolled) persist();
-  root.innerHTML = [onboardHtml(current()), projectHtml(current()), packetHtml(current()), flowHtml(current()), chainHtml(current()), handoffHtml(current()), searchHtml(), toolsHtml(current()), backupHtml(), accountHtml()].join('');
+  if (ui.view === 'guide') {
+    root.innerHTML = guideHtml(current());
+  } else {
+    root.innerHTML = [onboardHtml(current()), projectHtml(current()), packetHtml(current()), flowHtml(current()), chainHtml(current()), handoffHtml(current()), searchHtml(), toolsHtml(current()), backupHtml(), accountHtml()].join('');
+  }
   const preview = document.getElementById('preview');
   if (preview) preview.value = ui.preview;
   const status = document.getElementById('account-status');
   if (status && ui.accountText) status.textContent = ui.accountText;
   syncDock();
   paintCredits();
-  window.scrollTo(0, y);
+  window.scrollTo(0, ui.view === 'guide' ? 0 : y);
 }
 
 async function loadPublic(id) {
@@ -349,7 +510,8 @@ function saveSheet(event) {
   }
   persist();
   closeSheet();
-  render();
+  if (ui.view === 'guide' && !editing) afterGuideMutation();
+  else render();
   toast('Saved on this device.');
   persistCloud();
 }
@@ -419,7 +581,8 @@ function continueNext() {
   project.tools.forEach(tool => { tool.active = tool.id === next.id; });
   recordSession(state, project, { status: 'copied', agent: next, title: project.packet.goal || next.name, kind: 'hop' });
   persist();
-  render();
+  if (ui.view === 'guide') afterGuideMutation();
+  else render();
   persistCloud();
   if (!next.url) toast(`${next.name} has no website saved. The handoff text is ready to copy.`);
   else if (!popup) toast(`Pop-up blocked. The handoff is copied. Open ${next.name}: ${next.url}`);
@@ -436,7 +599,8 @@ function addPreset(key) {
   }
   current().tools.push(makeTool({ name: preset.name, url: preset.url, preset: preset.key }));
   persist();
-  render();
+  if (ui.view === 'guide') afterGuideMutation();
+  else render();
   toast(`${preset.name} added.`);
   persistCloud();
 }
@@ -453,6 +617,42 @@ function onClick(event) {
   if (action === 'scroll-to') document.getElementById(button.dataset.target)?.scrollIntoView();
   if (action === 'dismiss-onboarding') { state.onboardingDismissed = true; persist(); render(); }
   if (action === 'show-onboarding') { state.onboardingDismissed = false; persist(); render(); }
+  if (action === 'enter-guide') { enterGuide(); return; }
+  if (action === 'exit-guide') { exitGuide(); return; }
+  if (action === 'reset-guide') {
+    state = resetGuide(state);
+    persist();
+    render();
+    toast('Guide restarted at step 1.');
+    return;
+  }
+  if (action === 'skip-guide-step') {
+    state = skipGuideStep(state, button.dataset.step);
+    persist();
+    toast('Skipped. Next step is ready.');
+    render();
+    return;
+  }
+  if (action === 'guide-confirm') {
+    if (button.dataset.step === 'project' && !current().name.trim()) return toast('Type a project name first.');
+    state = confirmGuideStep(state, button.dataset.step);
+    persist();
+    toast(`Step done. Next: ${currentGuideStep(state, current()).step.title}`);
+    render();
+    return;
+  }
+  if (action === 'guide-next') {
+    const { progress, finished } = currentGuideStep(state, current());
+    if (finished) { exitGuide(); return; }
+    if (!progress.ready) return toast('Finish the items on this step first.');
+    const advanced = advanceGuideState(state, current());
+    state = advanced.state;
+    persist();
+    if (advanced.finished) toast('Walkthrough complete.');
+    else if (advanced.advanced) toast(`Next: ${advanced.step.title}`);
+    render();
+    return;
+  }
   if (action === 'open-add') openSheet(null);
   if (action === 'edit-tool') openSheet(toolById(button.dataset.id));
   if (action === 'add-preset') addPreset(button.dataset.key || document.getElementById('preset-select').value);
@@ -535,7 +735,8 @@ function onClick(event) {
     if (!gate.ok) return toast('Still needed before this hop can be marked done: ' + gate.missing.map(step => step.text).join(', '));
     hop.done = true;
     persist();
-    render();
+    if (ui.view === 'guide') afterGuideMutation();
+    else render();
     toast('Hop marked done.');
     persistCloud();
   }
@@ -554,7 +755,8 @@ function onClick(event) {
     hop.repliedAt = new Date().toISOString();
     recordSession(state, project, { status: 'ready', agent: tool, title: 'Pasted back', kind: 'paste' });
     persist();
-    render();
+    if (ui.view === 'guide') afterGuideMutation();
+    else render();
     toast(merged.decisionsAdded ? 'Merged into the packet, including Decisions.' : 'Merged into the current state.');
     persistCloud();
   }
@@ -572,6 +774,7 @@ function onClick(event) {
     else downloadText(text, `handoff-${project.name.replace(/[^\w.-]+/g, '-') || 'relay'}.md`);
     recordSession(state, project, { status: 'copied', agent: project.tools.find(tool => tool.active), title: project.packet.goal || project.name });
     persist();
+    if (ui.view === 'guide') afterGuideMutation();
   }
   if (action === 'share-link') shareLink();
   if (action === 'copy-agent-prompt') copyAgentPrompt();
@@ -619,21 +822,37 @@ function onInput(event) {
     const option = document.querySelector(`#project-select option[value="${CSS.escape(project.id)}"]`);
     if (option) option.textContent = target.value;
     persist();
+    if (ui.view === 'guide') refreshGuideIfNeeded();
   }
   if (target.id === 'project-notes') { project.notes = target.value; persist(); }
-  if (target.id === 'packet-goal') { project.packet.goal = target.value; project.handoff.goal = target.value; persist(); }
-  if (target.id === 'packet-state') { project.packet.state = target.value; persist(); }
-  if (target.id === 'packet-decisions') { project.packet.decisions = target.value; persist(); }
+  if (target.id === 'packet-goal') {
+    project.packet.goal = target.value;
+    project.handoff.goal = target.value;
+    persist();
+    if (ui.view === 'guide') afterGuideMutation();
+  }
+  if (target.id === 'packet-state') {
+    project.packet.state = target.value;
+    persist();
+    if (ui.view === 'guide') afterGuideMutation();
+  }
+  if (target.id === 'packet-decisions') {
+    project.packet.decisions = target.value;
+    persist();
+    if (ui.view === 'guide') afterGuideMutation();
+  }
   if (target.dataset.handoff) { project.handoff[target.dataset.handoff] = target.value; persist(); }
   if (target.dataset.rule) {
     const rule = project.flow.rules.find(item => item.id === target.dataset.rule);
     if (rule) rule.text = target.value;
     persist();
+    if (ui.view === 'guide') afterGuideMutation();
   }
   if (target.dataset.step) {
     const step = project.flow.steps.find(item => item.id === target.dataset.step);
     if (step) step.text = target.value;
     persist();
+    if (ui.view === 'guide') afterGuideMutation();
   }
   if (target.id === 'session-q') {
     ui.q = target.value;
@@ -851,7 +1070,8 @@ async function shareLink() {
     const row = recordSession(state, project, { status: 'shared', agent: project.tools.find(tool => tool.active), title: project.packet.goal || project.name, kind: 'share' });
     row.remoteId = data.id;
     persist();
-    render();
+    if (ui.view === 'guide') afterGuideMutation();
+    else render();
     toast('Link ready. Copy the prompt for your agent.');
     persistCloud();
   } catch (error) {
@@ -894,10 +1114,38 @@ async function refreshCredits() {
 
 let dragId = '';
 
+function onHashChange() {
+  if (handoffIdFromLocation(location)) return;
+  if (location.hash === '#guide') {
+    if (ui.view !== 'guide') enterGuide();
+    return;
+  }
+  if (ui.view === 'guide') {
+    ui.view = 'full';
+    render();
+  }
+  syncNav();
+}
+
 function bind() {
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
+  window.addEventListener('hashchange', onHashChange);
+  document.querySelector('.top nav')?.addEventListener('click', event => {
+    const link = event.target.closest('a');
+    if (!link) return;
+    const href = link.getAttribute('href') || '';
+    if (href === '#guide') {
+      event.preventDefault();
+      enterGuide();
+      return;
+    }
+    if (href.startsWith('#') && ui.view === 'guide') {
+      event.preventDefault();
+      exitGuide(href.slice(1));
+    }
+  });
   document.getElementById('sheet-form').addEventListener('submit', saveSheet);
   document.getElementById('sheet-cancel').addEventListener('click', closeSheet);
   document.getElementById('sheet-delete').addEventListener('click', () => {

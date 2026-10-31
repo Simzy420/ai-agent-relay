@@ -8,6 +8,10 @@ Shared-session search and the human checklist are ideas borrowed from the open-s
 
 ## Use it
 
+Open the **Guide** tab for a one-step-at-a-time walkthrough. Each step only shows the work for that section; when its required items are done, the guide moves to the next step.
+
+Or do it yourself in the full page:
+
 1. Name the project.
 2. Tap **+ Add AI tool**, or tap a preset (ChatGPT, Base44, Cursor, Buffer, Linear, Replit, Perplexity, Link by Stripe, and the older presets).
 3. Fill in the goal, current state, and **Decisions**. Add must-do rules and required steps if you want them in every handoff.
