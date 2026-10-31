@@ -271,9 +271,13 @@ function guideHtml(project) {
   const skip = step.optional
     ? `<button type="button" data-action="skip-guide-step" data-step="${escapeHtml(step.id)}">Skip this step</button>`
     : '';
-  const next = progress.ready
-    ? `<button type="button" class="primary" data-action="guide-next">Continue to next step</button>`
-    : `<button type="button" class="primary" data-action="guide-next" disabled>Complete the items above to continue</button>`;
+  // Project step already has its own confirm button; other steps auto-advance when ready.
+  let next = '';
+  if (step.id !== 'project') {
+    next = progress.ready
+      ? `<button type="button" class="primary" data-action="guide-next">Continue to next step</button>`
+      : `<p class="fine">Finish the checklist items above and this guide moves on by itself.</p>`;
+  }
   return `<section class="card guide-card" id="guide">
     <div class="guide-progress" aria-label="Guide progress">${dots}</div>
     <p class="fine">Step ${index + 1} of ${GUIDE_STEPS.length}</p>
